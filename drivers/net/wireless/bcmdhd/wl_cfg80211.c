@@ -288,6 +288,7 @@ static void wl_ch_to_chanspec(int ch,
  */
 static void wl_rst_ie(struct wl_priv *wl);
 static __used s32 wl_add_ie(struct wl_priv *wl, u8 t, u8 l, u8 *v);
+static void wl_update_hidden_ap_ie(struct wl_bss_info *bi, u8 *ie_stream, u32 *ie_size);
 static s32 wl_mrg_ie(struct wl_priv *wl, u8 *ie_stream, u16 ie_size);
 static s32 wl_cp_ie(struct wl_priv *wl, u8 *dst, u16 dst_size);
 static u32 wl_get_ielen(struct wl_priv *wl);
@@ -1564,8 +1565,13 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 
 	WL_DBG(("Enter wiphy (%p)\n", wiphy));
 	if (wl_get_drv_status_all(wl, SCANNING)) {
-		WL_ERR(("Scanning already\n"));
-		return -EAGAIN;
+                if (wl->scan_request == NULL) {
+                        wl_clr_drv_status_all(wl, SCANNING);
+                        WL_DBG(("<<<<<<<<<<<Force Clear Scanning Status>>>>>>>>>>>\n"));
+                } else {
+                        WL_ERR(("Scanning already\n"));
+                        return -EAGAIN;
+                }
 	}
 	if (wl_get_drv_status(wl, SCAN_ABORTING, ndev)) {
 		WL_ERR(("Scanning being aborted\n"));
@@ -2766,7 +2772,9 @@ wl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *dev,
 
 	bssidx = wl_cfgp2p_find_idx(wl, dev);
 
-	if (mac_addr) {
+	if (mac_addr &&
+	   ((params->cipher != WLAN_CIPHER_SUITE_WEP40) &&
+	    (params->cipher != WLAN_CIPHER_SUITE_WEP104))) {
 		wl_add_keyext(wiphy, dev, key_idx, mac_addr, params);
 		goto exit;
 	}
@@ -3031,6 +3039,23 @@ get_station_err:
 		}
 	}
 
+	return err;
+}
+
+int wl_cfg80211_update_power_mode(struct net_device *dev)
+{
+	int pm = -1;
+	int err;
+
+	err = wldev_ioctl(dev, WLC_GET_PM, &pm, sizeof(pm), false);
+	if (err || (pm == -1)) {
+		WL_ERR(("error (%d)\n", err));
+	} else {
+		pm = (pm == PM_OFF) ? false : true;
+		WL_DBG(("%s: %d\n", __func__, pm));
+		if (dev->ieee80211_ptr)
+			dev->ieee80211_ptr->ps = pm;
+	}
 	return err;
 }
 
@@ -4686,6 +4711,7 @@ static s32 wl_inform_single_bss(struct wl_priv *wl, struct wl_bss_info *bi)
 	beacon_proberesp->capab_info = cpu_to_le16(bi->capability);
 	wl_rst_ie(wl);
 
+	wl_update_hidden_ap_ie(bi, ((u8 *) bi) + bi->ie_offset, &bi->ie_length);
 	wl_mrg_ie(wl, ((u8 *) bi) + bi->ie_offset, bi->ie_length);
 	wl_cp_ie(wl, beacon_proberesp->variable, WL_BSS_INFO_MAX -
 		offsetof(struct wl_cfg80211_bss_info, frame_buf));
@@ -5305,6 +5331,7 @@ static s32 wl_update_bss_info(struct wl_priv *wl, struct net_device *ndev)
 		}
 		bi = (struct wl_bss_info *)(wl->extra_buf + 4);
 		if (memcmp(bi->BSSID.octet, curbssid, ETHER_ADDR_LEN)) {
+			WL_ERR(("Bssid doesn't match\n"));
 			err = -EIO;
 			goto update_bss_info_out;
 		}
@@ -5344,6 +5371,9 @@ static s32 wl_update_bss_info(struct wl_priv *wl, struct net_device *ndev)
 	wl_update_prof(wl, ndev, NULL, &dtim_period, WL_PROF_DTIMPERIOD);
 
 update_bss_info_out:
+	if (unlikely(err)) {
+		WL_ERR(("Failed with error %d\n", err));
+	}
 	mutex_unlock(&wl->usr_sync);
 	return err;
 }
@@ -6601,11 +6631,10 @@ s32 wl_cfg80211_attach_post(struct net_device *ndev)
 	if (wl && !wl_get_drv_status(wl, READY, ndev)) {
 			if (wl->wdev &&
 				wl_cfgp2p_supported(wl, ndev)) {
-#if !defined(WL_ENABLE_P2P_IF)
 				wl->wdev->wiphy->interface_modes |=
 					(BIT(NL80211_IFTYPE_P2P_CLIENT)|
 					BIT(NL80211_IFTYPE_P2P_GO));
-#endif
+
 				if ((err = wl_cfgp2p_init_priv(wl)) != 0)
 					goto fail;
 
@@ -7432,6 +7461,29 @@ static __used s32 wl_add_ie(struct wl_priv *wl, u8 t, u8 l, u8 *v)
 	ie->offset += l + 2;
 
 	return err;
+}
+
+static void wl_update_hidden_ap_ie(struct wl_bss_info *bi, u8 *ie_stream, u32 *ie_size)
+{
+	u8 *ssidie;
+
+	ssidie = (u8 *)cfg80211_find_ie(WLAN_EID_SSID, ie_stream, *ie_size);
+	if (!ssidie)
+		return;
+	if (ssidie[1] != bi->SSID_len) {
+		if (ssidie[1]) {
+			WL_ERR(("%s: Wrong SSID len: %d != %d\n", __func__, ssidie[1], bi->SSID_len));
+			return;
+		}
+		memmove(ssidie + bi->SSID_len + 2, ssidie + 2, *ie_size - (ssidie + 2 - ie_stream));
+		memcpy(ssidie + 2, bi->SSID, bi->SSID_len);
+		*ie_size = *ie_size + bi->SSID_len;
+		ssidie[1] = bi->SSID_len;
+		return;
+	}
+	if (*(ssidie + 2) == '\0')
+		memcpy(ssidie + 2, bi->SSID, bi->SSID_len);
+	return;
 }
 
 static s32 wl_mrg_ie(struct wl_priv *wl, u8 *ie_stream, u16 ie_size)
