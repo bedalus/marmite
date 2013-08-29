@@ -1929,7 +1929,7 @@ struct frontswap_ops zcache_frontswap_register_ops(void)
  * NOTHING HAPPENS!
  */
 
-static int zcache_enabled = 1; //on by default
+static int zcache_enabled = 0; //on by default
 
 static int __init enable_zcache(char *s)
 {
