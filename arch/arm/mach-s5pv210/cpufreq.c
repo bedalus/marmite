@@ -26,24 +26,16 @@
 #include <mach/regs-clock.h>
 #include <mach/cpu-freq-v210.h>
 
-#ifdef CONFIG_CPU_DIDLE
-#include <linux/deep_idle.h>
-#endif
-
 static struct clk *cpu_clk;
 static struct clk *dmc0_clk;
 static struct clk *dmc1_clk;
 static struct cpufreq_freqs freqs;
 static DEFINE_MUTEX(set_freq_lock);
 
-/* APLL M,P,S values for 1.4GHz/1.2GHz/1.0GHz/800MHz */
-#define APLL_VAL_1400	((1 << 31) | (175 << 16) | (3 << 8) | 1)
-#define APLL_VAL_1320   ((1 << 31) | (330 << 16) | (6 << 8) | 1)
-#define APLL_VAL_1300   ((1 << 31) | (325 << 16) | (6 << 8) | 0)
-#define APLL_VAL_1200	((1 << 31) | (150 << 16) | (3 << 8) | 1)
-#define APLL_VAL_1100   ((1 << 31) | (275 << 16) | (6 << 8) | 1)
-#define APLL_VAL_1000	((1 << 31) | (125 << 16) | (3 << 8) | 1)
-#define APLL_VAL_800	((1 << 31) | (100 << 16) | (3 << 8) | 1)
+#define APLL_VAL_1320    ((1<<31)|(165<<16)|(3<<8)|(1))
+#define APLL_VAL_1096  	((1<<31)|(137<<16)|(3<<8)|(1))
+#define APLL_VAL_1000	((1<<31)|(125<<16)|(3<<8)|(1))
+#define APLL_VAL_800	((1<<31)|(100<<16)|(3<<8)|(1))
 
 #define SLEEP_FREQ	(800 * 1000) /* Use 800MHz when entering sleep */
 
@@ -86,33 +78,14 @@ enum s5pv210_dmc_port {
 };
 
 static struct cpufreq_frequency_table s5pv210_freq_table[] = {
-	{L0, 1400*1000},
-	{L1, 1200*1000},
+	{L0, 1320*1000},
+	{L1, 1096*1000},
 	{L2, 1000*1000},
 	{L3, 800*1000},
-	{L4, 400*1000},
+   	{L4, 400*1000},
 	{L5, 200*1000},
 	{L6, 100*1000},
-	{0, CPUFREQ_TABLE_END},
-};
-
-// Define the freqs affected on the code to reduce changes
-// if we add or remove a new freq on the table
-unsigned int L_100 = L6;
-unsigned int L_1000 = L2;
-unsigned int L_200 = L5;
-#define SpeedSteeps 7
-
-static u32 sAPLL_confs[] = {
-    APLL_VAL_1400,
-    APLL_VAL_1200,
-    APLL_VAL_1000,
-    APLL_VAL_800,
-    APLL_VAL_800,
-    APLL_VAL_800,
-    APLL_VAL_800,
-    APLL_VAL_800,
-};
+	{0, CPUFREQ_TABLE_END},};
 
 static struct regulator *arm_regulator;
 static struct regulator *internal_regulator;
@@ -123,72 +96,63 @@ struct s5pv210_dvs_conf {
 };
 
 #ifdef CONFIG_CUSTOM_VOLTAGE
-unsigned long arm_volt_max = 1450000;
-unsigned long int_volt_max = 1250000;
+unsigned long arm_volt_max = 1500000;
+unsigned long int_volt_max = 1300000;
 #else
-const unsigned long arm_volt_max = 1450000;
-const unsigned long int_volt_max = 1250000;
+const unsigned long arm_volt_max = 1500000;
+const unsigned long int_volt_max = 1300000;
 #endif
 
 static struct s5pv210_dvs_conf dvs_conf[] = {
 	[L0] = {
-		.arm_volt   = 1420000,
-		.int_volt   = 1180000,
-	},
+		.arm_volt   = 1350000,
+		.int_volt   = 1150000,
+		},
 	[L1] = {
-		.arm_volt   = 1320000,
-		.int_volt   = 1110000,
-	},
+		.arm_volt   = 1300000,
+		.int_volt   = 1150000,
+		},
 	[L2] = {
 		.arm_volt   = 1250000,
 		.int_volt   = 1100000,
-	},
+		},
 	[L3] = {
 		.arm_volt   = 1200000,
 		.int_volt   = 1100000,
-	},
-	[L4] = {
+		},
+    	[L4] = {
 		.arm_volt   = 1050000,
 		.int_volt   = 1100000,
-	},
+		},
 	[L5] = {
 		.arm_volt   = 950000,
 		.int_volt   = 1100000,
-	},
+		},
 	[L6] = {
 		.arm_volt   = 950000,
 		.int_volt   = 1000000,
-	},
+		}
 };
 
-static u32 clkdiv_val[SpeedSteeps][11] = {
-	/*
-	 * Clock divider value for following
-	 * { APLL, A2M, HCLK_MSYS, PCLK_MSYS,
-	 *   HCLK_DSYS, PCLK_DSYS, HCLK_PSYS, PCLK_PSYS,
-	 *   ONEDRAM, MFC, G3D }
+static u32 clkdiv_val[7][11] = {
+	/*{ APLL, A2M, HCLK_MSYS, PCLK_MSYS,
+	 * HCLK_DSYS, PCLK_DSYS, HCLK_PSYS, PCLK_PSYS, ONEDRAM,
+	 * MFC, G3D }
 	 */
-
-	/* L0 : [1400/200/100][166/83][133/66][200/200] */
-	{0, 6, 6, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L1 : [1200/200/100][166/83][133/66][200/200] */
+	/* L0 : [1320/200/200/100][166/83][133/66][200/200] */
 	{0, 5, 5, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L2 : [1000/200/100][166/83][133/66][200/200] */
+	/* L1 : [1096/200/200/100][166/83][133/66][200/200] i.e. morfic's T11 config*/
 	{0, 4, 4, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L3 : [800/200/100][166/83][133/66][200/200] */
+	/* L2 : [1000/200/200/100][166/83][133/66][200/200] */
+	{0, 4, 4, 1, 3, 1, 4, 1, 3, 0, 0},
+	/* L3 : [800/200/200/100][166/83][133/66][200/200] */
 	{0, 3, 3, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L4 : [400/200/100][166/83][133/66][200/200] */
+	/* L4 : [400/200/200/100][166/83][133/66][200/200] */
 	{1, 3, 1, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L5 : [200/200/100][166/83][133/66][200/200] */
-	{3, 3, 1, 1, 3, 1, 4, 1, 3, 0, 0},
-
-	/* L6 : [100/100/100][83/83][66/66][100/100] */
-	{7, 7, 0, 0, 7, 0, 9, 0, 7, 0, 0},
+	/* L5 : [200/200/200/100][166/83][133/66][200/200] */
+	{3, 3, 0, 1, 3, 1, 4, 1, 3, 0, 0},
+	/* L6 : [100/100/100/100][83/83][66/66][100/100] */
+	{7, 7, 0, 0, 7, 0, 9, 0, 7, 0, 0}
 };
 
 /*
@@ -255,19 +219,6 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 	if (relation & ENABLE_FURTHER_CPUFREQ)
 		no_cpufreq_access = false;
 
-#ifdef CONFIG_CPU_DIDLE
-    // Ensures no application decreases the min freq when deepidle enabled at
-    // suspend mement
-    if (deepidle_is_enabled()) {
-        if (uIsSuspended == 1) {
-            if (policy->max != 800000) {
-                policy->user_policy.max = 800000;
-                policy->max = 800000;
-            }
-        }
-    }
-#endif
-
 	if (no_cpufreq_access) {
 #ifdef CONFIG_PM_VERBOSE
 		pr_err("%s:%d denied access to %s as it is disabled"
@@ -294,8 +245,20 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 	if (freqs.new == freqs.old)
 		goto out;
 
+	/* If we select OC, prevent 1GHz */
+	if (index == L2)
+	{
+		if (policy->user_policy.max >= 1100000)
+			index = L1;
+		freqs.new = s5pv210_freq_table[index].frequency;		
+	}
+
 	arm_volt = dvs_conf[index].arm_volt;
 	int_volt = dvs_conf[index].int_volt;
+
+	/* Increase voltages for FSB if 1.1GHz is selected */
+	if ((policy->user_policy.max >= 1100000) && (index != L0) && (index != L1) && (index !=L6))
+	    int_volt += 50000;
 
 	if (freqs.new > freqs.old) {
 		/* Voltage up code: increase ARM first */
@@ -305,6 +268,7 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 						    arm_volt, arm_volt_max);
 			if (ret)
 				goto out;
+
 			ret = regulator_set_voltage(internal_regulator,
 						    int_volt, int_volt_max);
 			if (ret)
@@ -315,12 +279,12 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 	cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
 
 	/* Check if there need to change PLL */
-	if ((index <= L_1000) || (freqs.old >= s5pv210_freq_table[L_1000].frequency))
+	if     ((index <= L2) || (freqs.old >= s5pv210_freq_table[L2].frequency))
 		pll_changing = 1;
 
 	/* Check if there need to change System bus clock */
-	if ((index == L_100) || (freqs.old == s5pv210_freq_table[L_100].frequency))
-		bus_speed_changing = 1;
+	if 	((index == L6) || (freqs.old == s5pv210_freq_table[L6].frequency))
+			bus_speed_changing = 1;
 
 	if (bus_speed_changing) {
 		/*
@@ -330,9 +294,7 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 		 */
 		if (pll_changing)
 			s5pv210_set_refresh(DMC1, 83000);
-		else
-			s5pv210_set_refresh(DMC1, 100000);
-
+		else 	s5pv210_set_refresh(DMC1, 100000); 
 		s5pv210_set_refresh(DMC0, 83000);
 	}
 
@@ -373,7 +335,7 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 		} while (reg & ((1 << 7) | (1 << 3)));
 
 		/*
-		 * 3. DMC1 refresh count for 133Mhz if (index == L_100) is
+		 * 3. DMC1 refresh count for 133Mhz if (index == L6) is
 		 * true refresh counter is already programed in upper
 		 * code. 0x287@83Mhz
 		 */
@@ -418,7 +380,8 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 	/* ARM MCS value changed */
 	reg = __raw_readl(S5P_ARM_MCS_CON);
 	reg &= ~0x3;
-	if (index >= L_200)
+	
+	if (index >= L5) 
 		reg |= 0x3;
 	else
 		reg |= 0x1;
@@ -434,12 +397,33 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 		 * 6-1. Set PMS values
 		 * 6-2. Wait untile the PLL is locked
 		 */
-		__raw_writel(sAPLL_confs[index], S5P_APLL_CON);
+                
+        switch ( index ) {
 
-		do {
-			reg = __raw_readl(S5P_APLL_CON);
-		} while (!(reg & (0x1 << 29)));
+		case L0:
+		/* APLL FOUT becomes 1320 Mhz */
+		__raw_writel(APLL_VAL_1320, S5P_APLL_CON);
+		break;            
 
+		case L1:
+		/* APLL FOUT becomes 1096 Mhz */
+		__raw_writel(APLL_VAL_1096, S5P_APLL_CON);
+		break;            
+		
+		case L2:
+                /* APLL FOUT becomes 1000 Mhz */
+                __raw_writel(APLL_VAL_1000, S5P_APLL_CON);
+                break;  
+                
+            	default:
+                /* APLL FOUT becomes 800 Mhz */
+                __raw_writel(APLL_VAL_800, S5P_APLL_CON); 
+                break;
+        }
+        /* 2-2. Wait until the PLL is locked */
+        do {
+            reg = __raw_readl(S5P_APLL_CON);
+        } while (!(reg & (0x1 << 29)));
 		/*
 		 * 7. Change souce clock from SCLKMPLL(667Mhz)
 		 * to SCLKA2M(200Mhz) in MFC_MUX and G3D MUX
@@ -482,15 +466,20 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 
 		/*
 		 * 10. DMC1 refresh counter
-		 * L_100 : DMC1 = 100Mhz 7.8us/(1/100) = 0x30c
+		 * L6 : DMC1 = 100Mhz 7.8us/(1/100) = 0x30c
 		 * Others : DMC1 = 200Mhz 7.8us/(1/200) = 0x618
 		 */
 		if (!bus_speed_changing)
-			s5pv210_set_refresh(DMC1, 200000);
+		{
+			if (policy->user_policy.max >= 1100000)
+			{
+				s5pv210_set_refresh(DMC1, 220000);
+			} //raised 220MHz FSB
+			else  	s5pv210_set_refresh(DMC1, 200000); //Not OC'ing so keep 200MHz FSB
+		}
 	}
-
 	/*
-	 * L_100 level need to change memory bus speed, hence onedram clock divier
+	 * L6 level need to change memory bus speed, hence onedram clock divier
 	 * and memory refresh parameter should be changed
 	 */
 	if (bus_speed_changing) {
@@ -504,13 +493,21 @@ static int s5pv210_target(struct cpufreq_policy *policy,
 		} while (reg & (1 << 15));
 
 		/* Reconfigure DRAM refresh counter value */
-		if (index != L_100) {
+		if (index != L6) 
+		{
 			/*
 			 * DMC0 : 166Mhz
-			 * DMC1 : 200Mhz
+			 * DMC1 : 200MHz or 220Mhz if OC'ing to 1096MHz CPU (L1)
 			 */
 			s5pv210_set_refresh(DMC0, 166000);
-			s5pv210_set_refresh(DMC1, 200000);
+			if (policy->user_policy.max >= 1100000)
+			{
+				s5pv210_set_refresh(DMC1, 220000); //raised 220MHz FSB
+			}
+			else
+			{
+				s5pv210_set_refresh(DMC1, 200000); //Not OC'ing so keep 200MHz FSB
+			}
 		} else {
 			/*
 			 * DMC0 : 83Mhz
@@ -562,11 +559,86 @@ static int check_mem_type(void __iomem *dmc_reg)
 	return val >> 8;
 }
 
-static int __devinit s5pv210_cpu_init(struct cpufreq_policy *policy)
+#ifdef CONFIG_CUSTOM_VOLTAGE
+static const int num_freqs = sizeof(dvs_conf) / sizeof(struct s5pv210_dvs_conf);
+
+void customvoltage_updatearmvolt(unsigned long * arm_voltages)
+{
+	int i;
+
+	mutex_lock(&set_freq_lock);
+	for (i = 0; i < 3; i++) {
+		if (arm_voltages[i] > arm_volt_max)
+		    arm_voltages[i] = arm_volt_max;
+		dvs_conf[i].arm_volt = arm_voltages[i];
+	}
+	mutex_unlock(&set_freq_lock);
+	return;
+}
+EXPORT_SYMBOL(customvoltage_updatearmvolt);
+
+void customvoltage_updateintvolt(unsigned long * int_voltages)
+{
+	int i;
+
+	mutex_lock(&set_freq_lock);
+	for (i = 0; i < 2; i++) {  // only allow int volts for 1.1GHz and 1.2GHz
+		if (int_voltages[i] > int_volt_max)
+		    int_voltages[i] = int_volt_max;
+		dvs_conf[i].int_volt = int_voltages[i];
+	}
+	mutex_unlock(&set_freq_lock);
+	return;
+}
+EXPORT_SYMBOL(customvoltage_updateintvolt);
+
+void customvoltage_updatemaxvolt(unsigned long * max_voltages)
+{
+    mutex_lock(&set_freq_lock);
+
+    arm_volt_max = max_voltages[0];
+    int_volt_max = max_voltages[1];
+
+    mutex_unlock(&set_freq_lock);
+
+    return;
+}
+EXPORT_SYMBOL(customvoltage_updatemaxvolt);
+
+int customvoltage_numfreqs(void)
+{
+    return num_freqs;
+}
+EXPORT_SYMBOL(customvoltage_numfreqs);
+
+void customvoltage_freqvolt(unsigned long * freqs, unsigned long * arm_voltages,
+			    unsigned long * int_voltages, unsigned long * max_voltages)
+{
+    int i = 0;
+
+    while (s5pv210_freq_table[i].frequency != CPUFREQ_TABLE_END) {
+	freqs[s5pv210_freq_table[i].index] = s5pv210_freq_table[i].frequency;
+	i++;
+    }
+
+    for (i = 0; i < num_freqs; i++) {
+	arm_voltages[i] = dvs_conf[i].arm_volt;
+	int_voltages[i] = dvs_conf[i].int_volt;
+    }
+
+    max_voltages[0] = arm_volt_max;
+    max_voltages[1] = int_volt_max;
+
+    return;
+}
+EXPORT_SYMBOL(customvoltage_freqvolt);
+#endif
+
+static int s5pv210_cpu_init(struct cpufreq_policy *policy)
 {
 	unsigned long mem_type;
-
-	int ret;
+    
+    int ret;
 
 	cpu_clk = clk_get(NULL, "armclk");
 	if (IS_ERR(cpu_clk))
@@ -667,7 +739,7 @@ static struct cpufreq_driver s5pv210_driver = {
 	.get		= s5pv210_getspeed,
 	.init		= s5pv210_cpu_init,
 	.name		= "s5pv210",
-	.attr		= s5pv210_cpufreq_attr,
+    .attr		= s5pv210_cpufreq_attr,
 #ifdef CONFIG_PM
 	.suspend	= s5pv210_cpufreq_suspend,
 	.resume		= s5pv210_cpufreq_resume,
@@ -682,7 +754,7 @@ static struct notifier_block s5pv210_cpufreq_reboot_notifier = {
 	.notifier_call	= s5pv210_cpufreq_reboot_notifier_event,
 };
 
-static int __devinit s5pv210_cpufreq_probe(struct platform_device *pdev)
+static int s5pv210_cpufreq_probe(struct platform_device *pdev)
 {
 	struct s5pv210_cpufreq_data *pdata = dev_get_platdata(&pdev->dev);
 	int i, j;
@@ -721,7 +793,8 @@ finish:
 
 	return cpufreq_register_driver(&s5pv210_driver);
 }
-
+/* dave */
+//static struct platform_driver s5pv210_cpufreq_drv = {
 static struct platform_driver s5pv210_cpufreq_driver = {
 	.probe		= s5pv210_cpufreq_probe,
 	.driver		= {
@@ -734,6 +807,7 @@ static int __init s5pv210_cpufreq_init(void)
 {
 	int ret;
 
+//	ret = platform_driver_register(&s5pv210_cpufreq_drv);
 	ret = platform_driver_register(&s5pv210_cpufreq_driver);
 	if (!ret)
 		pr_info("%s: S5PV210 cpu-freq driver\n", __func__);
