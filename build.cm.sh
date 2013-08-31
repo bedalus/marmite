@@ -14,7 +14,7 @@
 
 rm ./.config
 
-git apply -R cm_ioctrl.patch
+git apply cm_ioctrl.patch
 
 # make
 make bedalus_defconfig
@@ -27,8 +27,8 @@ find ./ -type f -name '*.ko' -exec cp -f {} ../marmite_zip/system/modules \;
 cp -f arch/arm/boot/zImage ../marmite_zip/kernel/
 
 cd ../marmite_zip
-zip -r ../marmite.zip * > /dev/null 2>&1
-mv ../marmite.zip ../../Documents_OSX/
+zip -r ../marmite_cm.zip * > /dev/null 2>&1
+mv ../marmite_cm.zip ../../Documents_OSX/
 cd ../marmite
 
 cp ./.config ./arch/arm/configs/slim_defconfig
