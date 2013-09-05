@@ -10,6 +10,10 @@ make -j7
 # copy zImage
 cp -f arch/arm/boot/zImage ../marmite/kernel/
 ls -l ../marmite/kernel/zImage
+
+# copy modules
+find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/modules \;
+
 cd ../marmite
 zip -r -9 marmite_vN.zip * > /dev/null
 mv marmite_vN.zip ../
