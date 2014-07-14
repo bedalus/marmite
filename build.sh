@@ -22,10 +22,21 @@ echo "Press enter to build cm kernel"
 read enterkey
 cd ../samsung
 
+git apply cm_ioctrl.patch
 
-#git apply cm.patch
-#make -j7
+make -j7
 
 # copy zImage
-#git apply -R cm.patch
+cp -f arch/arm/boot/zImage ../marmite/kernel/
+ls -l ../marmite/kernel/zImage
+
+# copy modules
+find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/modules \;
+
+cd ../marmite
+zip -r -9 marmite_vNcm.zip * > /dev/null
+mv marmite_vNcm.zip ../
+
+cd ../samsung
+git apply -R cm_ioctrl.patch
 
