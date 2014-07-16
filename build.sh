@@ -12,7 +12,7 @@ cp -f arch/arm/boot/zImage ../marmite/kernel/
 ls -l ../marmite/kernel/zImage
 
 # copy modules
-find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/modules \;
+find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/lib/modules/ \;
 
 cd ../marmite
 zip -r -9 marmite_vN.zip * > /dev/null
@@ -31,7 +31,7 @@ cp -f arch/arm/boot/zImage ../marmite/kernel/
 ls -l ../marmite/kernel/zImage
 
 # copy modules
-find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/modules \;
+find ./ -type f -name '*.ko' -exec cp -f {} ../marmite/system/lib/modules/ \;
 
 cd ../marmite
 zip -r -9 marmite_vNcm.zip * > /dev/null
