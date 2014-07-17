@@ -1,6 +1,7 @@
 /*
  * Copyright 2006-2010, Cypress Semiconductor Corporation.
  * Copyright (C) 2010, Samsung Electronics Co. Ltd. All Rights Reserved.
+ * Copyright 2011, Michael Richter (alias neldar)
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -28,14 +29,11 @@
 #include <linux/earlysuspend.h>
 #include <linux/input/cypress-touchkey.h>
 #include <linux/firmware.h>
-
-#ifdef CONFIG_BLD
-#include <linux/bld.h>
-#endif
-
-#ifdef CONFIG_GENERIC_BLN
 #include <linux/bln.h>
-#endif
+#include <linux/touchkey.h>
+
+#include <linux/device.h>
+#include <linux/miscdevice.h>
 
 #define SCANCODE_MASK		0x07
 #define UPDOWN_EVENT_MASK	0x08
@@ -63,13 +61,8 @@ struct cypress_touchkey_devdata {
 	bool has_legacy_keycode;
 };
 
-#ifdef CONFIG_BLD
-static struct cypress_touchkey_devdata *blddevdata;
-#endif
-
-#ifdef CONFIG_GENERIC_BLN
 static struct cypress_touchkey_devdata *blndevdata;
-#endif
+static int touchkey_backlight_enabled = 0;
 
 static int i2c_touchkey_read_byte(struct cypress_touchkey_devdata *devdata,
 					u8 *val)
@@ -162,7 +155,7 @@ out:
 
 static irqreturn_t touchkey_interrupt_thread(int irq, void *touchkey_devdata)
 {
-	u8 data = 0;
+	u8 data;
 	int i;
 	int ret;
 	int scancode;
@@ -178,11 +171,9 @@ static irqreturn_t touchkey_interrupt_thread(int irq, void *touchkey_devdata)
 		}
 	}
 
-	if (devdata->has_legacy_keycode)
-	{
+	if (devdata->has_legacy_keycode) {
 		scancode = (data & SCANCODE_MASK) - 1;
-		if (scancode < 0 || scancode >= devdata->pdata->keycode_cnt)
-		{
+		if (scancode < 0 || scancode >= devdata->pdata->keycode_cnt) {
 			dev_err(&devdata->client->dev, "%s: scancode is out of "
 				"range\n", __func__);
 			goto err;
@@ -190,31 +181,16 @@ static irqreturn_t touchkey_interrupt_thread(int irq, void *touchkey_devdata)
 		input_report_key(devdata->input_dev,
 			devdata->pdata->keycode[scancode],
 			!(data & UPDOWN_EVENT_MASK));
-
-#ifdef CONFIG_BLD
-		if (!(data & UPDOWN_EVENT_MASK))
-			touchkey_pressed();
-#endif
-	} else
-	{
+	} else {
 		for (i = 0; i < devdata->pdata->keycode_cnt; i++)
 			input_report_key(devdata->input_dev,
 				devdata->pdata->keycode[i],
 				!!(data & (1U << i)));
-
-#ifdef CONFIG_BLD
-		for (i = 0; i < devdata->pdata->keycode_cnt; i++)
-	    	{
-			if(!!(data & (1U << i)))
-			{			
-				touchkey_pressed();
-				break;
-			}
-	    	}
-#endif
 	}
 
 	input_sync(devdata->input_dev);
+
+	touchkey_backlight_enabled = 1;
 err:
 	return IRQ_HANDLED;
 }
@@ -254,11 +230,36 @@ static void cypress_touchkey_early_suspend(struct early_suspend *h)
 		devdata->pdata->touchkey_onoff(TOUCHKEY_OFF);
 		devdata->pdata->touchkey_sleep_onoff(TOUCHKEY_OFF);
 	}
-#else
-	devdata->pdata->touchkey_onoff(TOUCHKEY_OFF);
 #endif
+	devdata->pdata->touchkey_onoff(TOUCHKEY_OFF);
 
 	all_keys_up(devdata);
+
+	touchkey_backlight_enabled = 0;
+}
+
+static int cypress_touchkey_backlight_enable(struct cypress_touchkey_devdata *devdata)
+{
+	int ret = 0;
+	if (touchkey_backlight_enabled == 0) {
+		ret = i2c_touchkey_write_byte(devdata, devdata->backlight_on);
+		if (!ret) {
+			touchkey_backlight_enabled = 1;
+		}
+	}
+	return ret;
+}
+
+static int cypress_touchkey_backlight_disable(struct cypress_touchkey_devdata *devdata)
+{
+	int ret = 0;
+	if (touchkey_backlight_enabled == 1) {
+		ret = i2c_touchkey_write_byte(devdata, devdata->backlight_off);
+		if (!ret) {
+			touchkey_backlight_enabled = 0;
+		}
+	}
+	return ret;
 }
 
 static void cypress_touchkey_early_resume(struct early_suspend *h)
@@ -267,7 +268,7 @@ static void cypress_touchkey_early_resume(struct early_suspend *h)
 		container_of(h, struct cypress_touchkey_devdata, early_suspend);
 
 	devdata->pdata->touchkey_onoff(TOUCHKEY_ON);
-	if (i2c_touchkey_write_byte(devdata, devdata->backlight_on)) {
+	if (cypress_touchkey_backlight_enable(devdata)) {
 		devdata->is_dead = true;
 		devdata->pdata->touchkey_onoff(TOUCHKEY_OFF);
 		dev_err(&devdata->client->dev, "%s: touch keypad not responding"
@@ -365,7 +366,7 @@ static int cypress_touchkey_open(struct input_dev *input_dev)
 	devdata->pdata->touchkey_onoff(TOUCHKEY_OFF);
 	devdata->pdata->touchkey_onoff(TOUCHKEY_ON);
 
-	ret = i2c_touchkey_write_byte(devdata, devdata->backlight_on);
+	ret = cypress_touchkey_backlight_enable(devdata);
 	if (ret) {
 		dev_err(dev, "%s: touch keypad backlight on failed\n",
 				__func__);
@@ -375,33 +376,6 @@ static int cypress_touchkey_open(struct input_dev *input_dev)
 done:
 	input_dev->open = NULL;
 	return 0;
-}
-
-#ifdef CONFIG_BLD
-static void cypress_touchkey_bld_disable(void)
-{
-    i2c_touchkey_write_byte(blddevdata, blddevdata->backlight_off);
-}
-
-static void cypress_touchkey_bld_enable(void)
-{
-    i2c_touchkey_write_byte(blddevdata, blddevdata->backlight_on);
-}
-
-static struct bld_implementation cypress_touchkey_bld = 
-    {
-	.enable = cypress_touchkey_bld_enable,
-	.disable = cypress_touchkey_bld_disable,
-    };
-#endif
-
-#ifdef CONFIG_GENERIC_BLN
-static void enable_touchkey_backlights(void){
-       i2c_touchkey_write_byte(blndevdata, blndevdata->backlight_on);
-}
-
-static void disable_touchkey_backlights(void){
-       i2c_touchkey_write_byte(blndevdata, blndevdata->backlight_off);
 }
 
 static void cypress_touchkey_enable_led_notification(void){
@@ -419,10 +393,10 @@ static void cypress_touchkey_enable_led_notification(void){
 		blndevdata->pdata->touchkey_onoff(TOUCHKEY_ON);
 
 		/* write to i2cbus, enable backlights */
-		enable_touchkey_backlights();
+		cypress_touchkey_backlight_enable(blndevdata);
 	}
 	else
-	    pr_info("%s: cannot set notification led, touchkeys are enabled\n",__FUNCTION__);
+		pr_info("%s: cannot set notification led, touchkeys are enabled\n",__FUNCTION__);
 }
 
 static void cypress_touchkey_disable_led_notification(void){
@@ -434,7 +408,7 @@ static void cypress_touchkey_disable_led_notification(void){
 
 	/* if touchkeys lights are not used for touchmode */
 	if (blndevdata->is_powering_on){
-		disable_touchkey_backlights();
+		cypress_touchkey_backlight_disable(blndevdata);
 
 		#if 0
 		/*
@@ -451,7 +425,29 @@ static struct bln_implementation cypress_touchkey_bln = {
 	.enable = cypress_touchkey_enable_led_notification,
 	.disable = cypress_touchkey_disable_led_notification,
 };
-#endif
+
+
+static int cypress_touchkey_status_backlight(void) {
+	return touchkey_backlight_enabled;
+}
+
+static void cypress_touchkey_enable_backlight(void) {
+	if (!blndevdata->is_powering_on) {
+		cypress_touchkey_backlight_enable(blndevdata);
+	}
+}
+
+static void cypress_touchkey_disable_backlight(void) {
+	if (!blndevdata->is_powering_on) {
+		cypress_touchkey_backlight_disable(blndevdata);
+	}
+}
+
+static struct touchkey_implementation cypress_touchkey_touchkey = {
+	.enable = cypress_touchkey_enable_backlight,
+	.disable = cypress_touchkey_disable_backlight,
+	.status = cypress_touchkey_status_backlight,
+};
 
 static int cypress_touchkey_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
@@ -525,7 +521,7 @@ static int cypress_touchkey_probe(struct i2c_client *client,
 
 	set_device_params(devdata, data);
 
-	err = i2c_touchkey_write_byte(devdata, devdata->backlight_on);
+	err = cypress_touchkey_backlight_enable(devdata);
 	if (err) {
 		dev_err(dev, "%s: touch keypad backlight on failed\n",
 				__func__);
@@ -552,17 +548,15 @@ static int cypress_touchkey_probe(struct i2c_client *client,
 
 	devdata->is_powering_on = false;
 
-#ifdef CONFIG_BLD
-	blddevdata = devdata;
-	register_bld_implementation(&cypress_touchkey_bld);
-#endif
-
 #ifdef CONFIG_GENERIC_BLN
 	blndevdata = devdata;
 	register_bln_implementation(&cypress_touchkey_bln);
 #endif
 
+	register_touchkey_implementation(&cypress_touchkey_touchkey);
+
 	return 0;
+
 
 err_req_irq:
 err_backlight_on:
